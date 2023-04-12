@@ -63,7 +63,7 @@ fn setup(mut commands: Commands,
     world.cam = Some(commands.spawn(SpatialBundle::default()
     ).with_children(|u| {
 	u.spawn(SpriteBundle {
-	    texture: asset_server.load("guillemot.png"),
+	    texture: asset_server.load("cheater.png"),
 	    ..default()
 	});
     }).id());
