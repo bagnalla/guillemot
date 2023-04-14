@@ -10,13 +10,14 @@ use rand::distributions::Uniform;
 use rand_distr::{Normal};
 
 const CELL_SIZE: usize = 24;
-const GRID_SIZE: usize = 64;
-const MOVE_SPEED: f32 = 5.0;
-const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 4) as usize;
+const GRID_SIZE: usize = 128;
+const MOVE_SPEED: f32 = 10.0;
+const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 2) as usize;
 const CAM_SPEED: f32 = 200.0;
-const INCUBATION_PERIOD: u32 = 20;
-const EGG_EXPIRATION: u32 = 10;
-const DEATH_RATE: f32 = 1.0 / 200.0;
+const INCUBATION_PERIOD: u32 = 15;
+const EGG_EXPIRATION: u32 = 20;
+const DEATH_RATE: f32 = 1.0 / 500.0;
+const MUTATION_RATE: f32 = 0.02;
 
 #[derive(Component, Clone, Copy)]
 enum Strategy {
@@ -26,7 +27,7 @@ enum Strategy {
 }
 
 #[derive(Component, Clone, Copy)]
-struct Age(u32);
+struct Age(f32);
 
 #[derive(Component, Clone, Copy)]
 struct Genes(Vec3);
@@ -34,12 +35,16 @@ struct Genes(Vec3);
 #[derive(Component, Clone, Copy, Debug)]
 struct Position { x: usize, y: usize }
 
+// #[derive(Component, Clone, Copy)]
+// struct Alive(bool);
+
 #[derive(Bundle)]
 struct Bird {
     age: Age,
     strategy: Strategy,
     genes: Genes,
     position: Position,
+    // alive: Alive,
     sprite: SpriteBundle
 }
 
@@ -55,7 +60,6 @@ struct Egg {
 enum Cell {
     Bird(Entity),
     Egg(Entity),
-    // BirdOnEgg { bird: Entity, egg: Entity, time_elapsed: f64 },
     BirdOnEgg { bird: Entity, egg: Entity },
     Empty
 }
@@ -85,6 +89,13 @@ impl Cell {
 	    _ => false
 	}
     }
+    fn bird_id(&self) -> Option<Entity> {
+	match self {
+	    Cell::Bird(id) => Some(*id),
+	    Cell::BirdOnEgg { bird: id, .. } => Some(*id),
+	    _ => None
+	}
+    }
 }
 
 #[derive(Component)]
@@ -112,8 +123,7 @@ impl Default for World {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 enum Sets {
     Move,
-    Update,
-    Age
+    Sim
 }
 
 fn main() {
@@ -131,16 +141,21 @@ fn main() {
 	.init_resource::<World>()
         .add_startup_system(setup)
 	.add_system(update_camera)
-	.add_system(move_sprites.in_set(Sets::Move))
-	.add_system(update_sim.in_set(Sets::Update).after(Sets::Move))
-	.add_system(age_system.in_set(Sets::Age).after(Sets::Update))
+	.add_system(move_sprites)
+	.add_system(update_birds.in_set(Sets::Sim))
+	// .add_system(update_eggs.in_set(Sets::Sim))
+	.add_system(update_age.after(Sets::Sim))
+	.add_system(update_frame_counter.after(Sets::Sim))
         .run();
 }
 
-fn nearest_empty_cell(grid: &Array2D<Cell>, pos: &Position) -> Option<Position> {
-    for (x, y) in [(pos.x-1, pos.y-1), (pos.x, pos.y-1), (pos.x+1, pos.y-1),
-		   (pos.x-1, pos.y), (pos.x, pos.y), (pos.x+1, pos.y),
-		   (pos.x-1, pos.y+1), (pos.x, pos.y+1), (pos.x+1, pos.y+1)] {
+fn nearest_empty_cell(grid: &Array2D<Cell>, pos: &Position, rng: &mut ThreadRng)
+		      -> Option<Position> {
+    let mut ps = [(pos.x-1, pos.y-1), (pos.x, pos.y-1), (pos.x+1, pos.y-1),
+		  (pos.x-1, pos.y), (pos.x, pos.y), (pos.x+1, pos.y),
+		  (pos.x-1, pos.y+1), (pos.x, pos.y+1), (pos.x+1, pos.y+1)];
+    ps.shuffle(rng);
+    for (x, y) in ps {
 	match grid.get(x, y) {
 	    Some(Cell::Empty) => return Some(Position { x: x, y: y }),
 	    _ => ()
@@ -153,36 +168,6 @@ fn setup(mut commands: Commands,
 	 mut world: ResMut<World>,
 	 asset_server: Res<AssetServer>) {
     commands.spawn(Camera2dBundle::default());
-    
-    // world.cam = Some(commands.spawn((Camera, SpatialBundle::default())
-    // ).with_children(|u| {
-    // 	// u.spawn(SpriteBundle {
-    // 	//     texture: asset_server.load("cheater.png"),
-    // 	//     ..default()
-    // 	// });
-
-    // 	let mut rng = rand::thread_rng();
-    // 	let unif = Uniform::from(0..GRID_SIZE);
-	
-    // 	// let mut birds: u32 = 0;
-    // 	while world.pop < TARGET_POP {
-    // 	    let i = unif.sample(&mut rng);
-    // 	    let j = unif.sample(&mut rng);
-    // 	    let mut cell = world.grid.get_mut(i, j).unwrap();
-    // 	    match cell {
-    // 		Cell::Empty => {
-    // 		    let bird_id = spawn_bird(Strategy::Altruistic,
-    // 					     Genes(Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0)),
-    // 					     Position { x: i, y: j },
-    // 					     &mut u, &asset_server
-    // 		    );
-    // 		    *cell = Cell::Bird(bird_id);
-    // 		    world.pop += 1
-    // 		}
-    // 		_ => continue
-    // 	    }
-    // 	}
-    // }).id());
 
     let cam = commands.spawn((Camera, SpatialBundle::default())).id();
     let mut rng = rand::thread_rng();
@@ -191,17 +176,13 @@ fn setup(mut commands: Commands,
     while world.pop < TARGET_POP {
 	let i = unif.sample(&mut rng);
 	let j = unif.sample(&mut rng);
-	let mut cell = world.grid.get_mut(i, j).unwrap();
-	match cell {
-	    Cell::Empty => {
-		let bird_id = spawn_bird(Strategy::Altruistic,
-					 Genes(Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0)),
-					 Position { x: i, y: j },
-					 cam, &mut commands, &asset_server);
-		*cell = Cell::Bird(bird_id);
-		world.pop += 1
-	    }
-	    _ => continue
+	if world.grid.get(i, j).unwrap().is_empty() {
+	    let bird_id = spawn_bird(Strategy::Altruistic,
+				     // Genes(Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0)),
+				     Genes(Vec3::new(1.0, 0.0, 0.0)),
+				     Position { x: i, y: j },
+				     cam, &mut commands, &mut world, &asset_server);
+	    *world.grid.get_mut(i, j).unwrap() = Cell::Bird(bird_id)
 	}
     }
 
@@ -248,27 +229,34 @@ fn update_camera(time: Res<Time>,
     // This doesn't work for some reason in the Virtualbox Ubuntu VM
     // (delta should be the difference in mouse position but currently
     // just gives the coordinates of the mouse in screen space.
-    for ev in motion_evr.iter() {
-	if buttons.pressed(MouseButton::Left) {
-	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
-	    transform.translation += Vec3::new(ev.delta.x, -ev.delta.y, 0.0)
-	}
-    }
+    // for ev in motion_evr.iter() {
+    // 	if buttons.pressed(MouseButton::Left) {
+    // 	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
+    // 	    transform.translation += Vec3::new(ev.delta.x, -ev.delta.y, 0.0)
+    // 	}
+    // }
 }
 
 fn move_sprites(time: Res<Time>,
 		mut query: Query<(&mut Transform, &Position)>) {
     for (mut transform, Position { x, y }) in query.iter_mut() {
-	let v = Vec3::new((CELL_SIZE * x) as f32 - GRID_SIZE as f32 / 2.0,
-			  (CELL_SIZE * y) as f32 - GRID_SIZE as f32 / 2.0,
+	let v = Vec3::new((CELL_SIZE * x) as f32,
+			  (CELL_SIZE * y) as f32,
 			  transform.translation.z) - transform.translation;
 	transform.translation += v * MOVE_SPEED * time.delta_seconds();
     }
 }
 
-fn age_system(mut query: Query<&mut Age>) {
-    for mut age in query.iter_mut() {
-	age.0 += 1
+fn update_age(mut eggs: Query<(&mut Age, Without<Strategy>)>,
+	      mut birds: Query<(&mut Age, &Strategy)>) {
+    for (mut age, _) in eggs.iter_mut() {
+	age.0 += 1.0
+    }
+    for (mut age, strat) in birds.iter_mut() {
+	match strat {
+	    Strategy::Selfish => age.0 += 1.5,
+	    _ => age.0 += 1.0
+	}
     }
 }
 
@@ -277,7 +265,8 @@ fn birth_rate(current_pop: usize) -> f32 {
     // (TARGET_POP - current_pop + current_pop * DEATH_RATE) / (current_pop - )
     let br = (TARGET_POP as f32 + current_pop as f32 * (DEATH_RATE - 1.0)) /
 	(current_pop as f32 * (1.0 - DEATH_RATE));
-    info!("birth rate: {}", br);
+    // info!("current_pop: {}", current_pop);
+    // info!("birth rate: {}", br);
     br
 }
 
@@ -304,12 +293,15 @@ fn hatch(pos: &Position, genes: &Genes, rng: &mut ThreadRng) -> Strategy {
 }
 
 fn spawn_bird(strat: Strategy, genes: Genes, pos: Position, cam: Entity,
-	      commands: &mut Commands, asset_server: &Res<AssetServer>) -> Entity {
+	      commands: &mut Commands, world: &mut ResMut<World>,
+	      asset_server: &Res<AssetServer>) -> Entity {
+    world.pop += 1;
     commands.spawn(Bird {
-	age: Age(0),
+	age: Age(0.0),
 	strategy: strat,
 	genes: genes,
 	position: pos,
+	// alive: Alive(true),
 	sprite: SpriteBundle {
 	    texture: asset_server.load(match strat {
 		Strategy::Altruistic => "altruist.png",
@@ -332,88 +324,93 @@ fn spawn_bird(strat: Strategy, genes: Genes, pos: Position, cam: Entity,
 }
 
 fn spawn_egg(genes: Genes, pos: Position, cam: Entity,
-	     commands: &mut Commands, asset_server: &Res<AssetServer>) -> Entity {
+	     commands: &mut Commands, world: &mut World,
+	     asset_server: &Res<AssetServer>) -> Entity {
+    world.pop += 1;
     commands.spawn(Egg {
-	age: Age(0),
+	age: Age(0.0),
 	genes: genes,
 	position: pos,
 	sprite: SpriteBundle {
 	    texture: asset_server.load("egg.png"),
 	    transform: Transform {
-		translation: Vec3::new((pos.x * CELL_SIZE - CELL_SIZE / 2) as f32,
-				       (pos.y * CELL_SIZE - CELL_SIZE / 2) as f32,
+		// translation: Vec3::new((pos.x * CELL_SIZE - CELL_SIZE / 2) as f32,
+		// 		       (pos.y * CELL_SIZE - CELL_SIZE / 2) as f32,
+		translation: Vec3::new((pos.x * CELL_SIZE) as f32,
+				       (pos.y * CELL_SIZE) as f32,
 				       1.0),
 		..default()
 	    },
 	    sprite: Sprite {
-		custom_size: Some(Vec2::new(CELL_SIZE as f32 / 2.0,
-					    CELL_SIZE as f32 / 2.0)),
+		custom_size: Some(Vec2::new(CELL_SIZE as f32 / 3.0,
+					    CELL_SIZE as f32 / 3.0)),
 		..default()
 	    },
 	    ..default()
 	}}).set_parent(cam).id()
 }
 
-fn update_sim(time: Res<Time>,
-	      mut commands: Commands,
-	      mut world: ResMut<World>,
-	      asset_server: Res<AssetServer>,
-	      mut birds: Query<(Entity, &Age, &mut Position, &Strategy, &Genes, With<Sprite>)>,
-	      mut eggs: Query<(Entity, &Age, &Position, &Genes,
-			       With<Sprite>, Without<Strategy>)>) {
+fn update_frame_counter(mut world: ResMut<World>) {
     world.frame_counter += 1;
-    if world.frame_counter < 1 {
+}
+
+fn bird_death(id: Entity, pos: &Position,
+	      commands: &mut Commands, world: &mut ResMut<World>) {
+    // info!("bird {:?} died at {:?}", id, pos);
+    commands.entity(id).despawn();
+    *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
+    world.pop -= 1;
+}
+
+fn egg_death(id: Entity, pos: &Position,
+	      commands: &mut Commands, world: &mut ResMut<World>) {
+    // info!("egg {:?} died at {:?}", id, pos);
+    commands.entity(id).despawn();
+    *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
+    world.pop -= 1;
+}
+
+fn update_birds(time: Res<Time>,
+		mut commands: Commands,
+		mut world: ResMut<World>,
+		asset_server: Res<AssetServer>,
+		mut birds: Query<(Entity, &Age, &mut Position, &Strategy,
+				  &Genes, With<Sprite>)>,
+		mut eggs: Query<(Entity, &Age, &Position, &Genes,
+				 With<Sprite>, Without<Strategy>)>) {
+    if world.frame_counter % 1 != 0 {
 	return
     }
-    world.frame_counter = 0;
+
+    // info!("world.pop: {:?}", world.pop);
     
     let mut rng = rand::thread_rng();
     let unif = Uniform::from(0..3);
-    let gauss = Normal::new(0.0, 0.01).unwrap();
+    let gauss = Normal::new(0.0, MUTATION_RATE).unwrap();
     let cam = world.cam.unwrap();
-    
-    // First process eggs.
-    for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
-	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
-	if cell.is_egg() {
-	    if *egg_age >= EGG_EXPIRATION {
-		commands.entity(egg_id).despawn()
-	    }
-	} else if cell.is_bird_on_egg() {
-	    if *egg_age >= INCUBATION_PERIOD {
-		commands.entity(egg_id).despawn();
-		match nearest_empty_cell(&world.grid, egg_pos) {
-		    Some(pos) => {
-			let strat = hatch(&pos, genes, &mut rng);
-			let bird_id = spawn_bird(strat, *genes, pos,
-						 cam, &mut commands, &asset_server);
-			*world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Bird(bird_id)
-		    },
-		    None => () // No space, chick dies
-		}
-	    }
-	} else {
-	    panic!("expected egg at location {:?}", egg_pos)
-	}
-    }
 
-    // Then process birds.
-    for (bird_id, bird_age, mut bird_pos, strat, genes, _) in birds.iter_mut() {
+    for (bird_id, Age(bird_age), mut bird_pos, strat, genes, _) in birds.iter_mut() {
+	// if !alive.0 {
+	//     continue
+	// }
 	let cell = world.grid.get(bird_pos.x, bird_pos.y).unwrap();
 	if cell.is_bird() {
-	    if rng.gen::<f32>() <= DEATH_RATE {
-		commands.entity(bird_id).despawn();
-		world.pop -= 1;
+	    if rng.gen::<f32>() <= DEATH_RATE * *bird_age as f32 {
+		bird_death(bird_id, &bird_pos, &mut commands, &mut world)
 	    } else if rng.gen::<f32>() <= birth_rate(world.pop) {
-		match nearest_empty_cell(&world.grid, &bird_pos) {
+		match nearest_empty_cell(&world.grid, &bird_pos, &mut rng) {
 		    Some(pos) => {
 			let mutated_genes = mutate(genes, gauss, &mut rng);
 			let egg_id = spawn_egg(mutated_genes, pos, cam,
-					       &mut commands, &asset_server);
+					       &mut commands, &mut world, &asset_server);
 			match strat {
-			    Strategy::Selfish =>
+			    Strategy::Selfish => {
+				*world.grid.get_mut(bird_pos.x, bird_pos.y).unwrap() =
+				    Cell::Empty;
+				*bird_pos = pos;
 				*world.grid.get_mut(pos.x, pos.y).unwrap() =
-				Cell::BirdOnEgg { bird: bird_id, egg: egg_id },
+				    Cell::BirdOnEgg { bird: bird_id, egg: egg_id }
+			    },
 			    _  =>
 				*world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Egg(egg_id)
 			}
@@ -453,7 +450,93 @@ fn update_sim(time: Res<Time>,
 	} else if cell.is_bird_on_egg() {
 	    ()
 	} else {
-	    panic!("expected bird at location {:?}", bird_pos)
+	    panic!("expected bird {:?} at location {:?}, got {:?}", bird_id, bird_pos, cell)
+	}
+    }
+
+    for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
+	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
+	if cell.is_egg() {
+	    if *egg_age >= EGG_EXPIRATION as f32 {
+		egg_death(egg_id, egg_pos, &mut commands, &mut world)
+		// commands.entity(egg_id).despawn();
+		// *world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Empty
+	    }
+	} else if cell.is_bird_on_egg() {
+	    let bird_id = cell.bird_id().unwrap();
+	    if *egg_age >= INCUBATION_PERIOD as f32 {
+		commands.entity(egg_id).despawn();
+		world.pop -= 1;
+		match nearest_empty_cell(&world.grid, egg_pos, &mut rng) {
+		    Some(pos) => {
+			let strat = hatch(&pos, genes, &mut rng);
+			let chick_id = spawn_bird(strat, *genes, pos,
+						  cam, &mut commands, &mut world,
+						  &asset_server);
+			*world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Bird(chick_id)
+		    },
+		    None => () // No space, chick dies
+		}
+		// if rng.gen::<f32>() <= DEATH_RATE * INCUBATION_PERIOD as f32 {
+		//     bird_death(bird_id, egg_pos, &mut birds.get_mut(bird_id).unwrap(),
+		// 	       &mut commands, &mut world)
+		// } else {
+		*world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Bird(bird_id)
+		// }
+	    }
+	} else {
+	    panic!("expected egg at location {:?}", egg_pos)
 	}
     }
 }
+
+// fn update_eggs(time: Res<Time>,
+// 	       mut commands: Commands,
+// 	       mut world: ResMut<World>,
+// 	       asset_server: Res<AssetServer>,
+// 	       mut eggs: Query<(Entity, &Age, &Position, &Genes,
+// 				With<Sprite>, Without<Strategy>)>,
+// 	       // mut birds: Query<&mut Alive>
+// ) {
+//     if world.frame_counter % 1 != 0 {
+// 	return
+//     }
+    
+//     let mut rng = rand::thread_rng();
+//     let unif = Uniform::from(0..3);
+//     let gauss = Normal::new(0.0, 0.01).unwrap();
+//     let cam = world.cam.unwrap();
+    
+//     for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
+// 	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
+// 	if cell.is_egg() {
+// 	    if *egg_age >= EGG_EXPIRATION {
+// 		commands.entity(egg_id).despawn();
+// 		*world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Empty
+// 	    }
+// 	} else if cell.is_bird_on_egg() {
+// 	    let bird_id = cell.bird_id().unwrap();
+// 	    if *egg_age >= INCUBATION_PERIOD {
+// 		commands.entity(egg_id).despawn();
+// 		match nearest_empty_cell(&world.grid, egg_pos) {
+// 		    Some(pos) => {
+// 			let strat = hatch(&pos, genes, &mut rng);
+// 			let chick_id = spawn_bird(strat, *genes, pos,
+// 						  cam, &mut commands, &mut world,
+// 						  &asset_server);
+// 			*world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Bird(chick_id)
+// 		    },
+// 		    None => () // No space, chick dies
+// 		}
+// 		// if rng.gen::<f32>() <= DEATH_RATE * INCUBATION_PERIOD as f32 {
+// 		//     bird_death(bird_id, egg_pos, &mut birds.get_mut(bird_id).unwrap(),
+// 		// 	       &mut commands, &mut world)
+// 		// } else {
+// 		*world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Bird(bird_id)
+// 		// }
+// 	    }
+// 	} else {
+// 	    panic!("expected egg at location {:?}", egg_pos)
+// 	}
+//     }
+// }
