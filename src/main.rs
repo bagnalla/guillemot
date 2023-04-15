@@ -9,12 +9,12 @@ use bevy::{
 use rand::prelude::*;
 use rand::distributions::Uniform;
 use rand_distr::{Normal};
-use std::time::{Duration, Instant};
+// use std::time::{Duration, Instant};
 
 const CELL_SIZE: usize = 24;
-const GRID_SIZE: usize = 128;
+const GRID_SIZE: usize = 32;
 const MOVE_SPEED: f32 = 10.0;
-const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 4) as usize;
+const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 3) as usize;
 const CAM_SPEED: f32 = 200.0;
 const INCUBATION_PERIOD: u32 = 15;
 const EGG_EXPIRATION: u32 = 20;
@@ -109,7 +109,9 @@ struct World {
     cam: Option<Entity>,
     grid: Array2D<Cell>,
     pop: usize,
-    frame_counter: u32
+    frame_counter: u32,
+    unif: Uniform<i32>,
+    gauss: Normal<f32>
 }
 
 impl Default for World {
@@ -118,14 +120,15 @@ impl Default for World {
 	    cam: None,
 	    grid: Array2D::filled_with(Cell::Empty, GRID_SIZE, GRID_SIZE),
 	    pop: 0,
-	    frame_counter: 0
+	    frame_counter: 0,
+	    unif: Uniform::from(0..3),
+	    gauss: Normal::new(0.0, MUTATION_RATE).unwrap()
 	}
     }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 enum Sets {
-    Move,
     Sim
 }
 
@@ -196,7 +199,7 @@ fn setup(mut commands: Commands,
 fn update_camera(time: Res<Time>,
 		 keyboard_input: Res<Input<KeyCode>>,
 		 mut transforms: Query<(&mut Transform, With<Camera>)>,
-		 mut mouse_motion_events: EventReader<MouseMotion>,
+		 // mut mouse_motion_events: EventReader<MouseMotion>,
 		 mut scroll_evr: EventReader<MouseWheel>,
 		 buttons: Res<Input<MouseButton>>,
 		 mut motion_evr: EventReader<MouseMotion>) {
@@ -233,12 +236,12 @@ fn update_camera(time: Res<Time>,
     // This doesn't work for some reason in the Virtualbox Ubuntu VM
     // (delta should be the difference in mouse position but currently
     // just gives the coordinates of the mouse in screen space.
-    for ev in motion_evr.iter() {
-    	if buttons.pressed(MouseButton::Left) {
-    	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
-    	    transform.translation += Vec3::new(ev.delta.x, -ev.delta.y, 0.0)
-    	}
-    }
+    // for ev in motion_evr.iter() {
+    // 	if buttons.pressed(MouseButton::Left) {
+    // 	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
+    // 	    transform.translation += Vec3::new(ev.delta.x, -ev.delta.y, 0.0)
+    // 	}
+    // }
 }
 
 fn move_sprites(time: Res<Time>,
@@ -251,7 +254,7 @@ fn move_sprites(time: Res<Time>,
     }
 }
 
-fn update_age(mut world: ResMut<World>,
+fn update_age(world: ResMut<World>,
 	      mut eggs: Query<(&mut Age, Without<Strategy>)>,
 	      mut birds: Query<(&mut Age, &Strategy)>) {
     if world.frame_counter % FRAME_DELAY != 0 {
@@ -283,13 +286,15 @@ fn mutate(genes: &Genes,
     let Genes(Vec3 { x, y, z }) = genes;
     let x2 = f32::max(0.0, x + gauss.sample(rng));
     let y2 = f32::max(0.0, y + gauss.sample(rng));
+    // let y2 = y;
     let z2 = f32::max(0.0, z + gauss.sample(rng));
+    // let z2 = z;
     let c = x2 + y2 + z2;
     Genes(Vec3::new(x2 / c, y2 / c, z2 / c))
 }
 
-fn hatch(pos: &Position, genes: &Genes, rng: &mut ThreadRng) -> Strategy {
-    let Genes(Vec3 { x, y, z }) = genes;
+fn hatch(genes: &Genes, rng: &mut ThreadRng) -> Strategy {
+    let Genes(Vec3 { x, y, .. }) = genes;
     let p: f32 = rng.gen();
     if p <= *x {
 	Strategy::Altruistic
@@ -331,7 +336,7 @@ fn spawn_bird(strat: Strategy, genes: Genes, pos: Position, cam: Entity,
 	}}).set_parent(cam).id()
 }
 
-fn spawn_egg(genes: Genes, pos: Position, cam: Entity,
+fn spawn_egg(genes: Genes, bird_pos: Position, pos: Position, cam: Entity,
 	     commands: &mut Commands, world: &mut World,
 	     asset_server: &Res<AssetServer>) -> Entity {
     world.pop += 1;
@@ -342,10 +347,8 @@ fn spawn_egg(genes: Genes, pos: Position, cam: Entity,
 	sprite: SpriteBundle {
 	    texture: asset_server.load("egg.png"),
 	    transform: Transform {
-		// translation: Vec3::new((pos.x * CELL_SIZE - CELL_SIZE / 2) as f32,
-		// 		       (pos.y * CELL_SIZE - CELL_SIZE / 2) as f32,
-		translation: Vec3::new((pos.x * CELL_SIZE) as f32,
-				       (pos.y * CELL_SIZE) as f32,
+		translation: Vec3::new((bird_pos.x * CELL_SIZE) as f32,
+				       (bird_pos.y * CELL_SIZE) as f32,
 				       1.0),
 		..default()
 	    },
@@ -380,32 +383,21 @@ fn egg_death(id: Entity, pos: &Position,
     world.pop -= 1;
 }
 
-fn update_sim(time: Res<Time>,
-	      mut commands: Commands,
+fn update_sim(mut commands: Commands,
 	      mut world: ResMut<World>,
 	      asset_server: Res<AssetServer>,
 	      mut birds: Query<(Entity, &Age, &mut Position, &Strategy,
 				&Genes, With<Sprite>)>,
 	      mut eggs: Query<(Entity, &Age, &Position, &Genes,
-	      		 With<Sprite>, Without<Strategy>)>
-) {
+	      		 With<Sprite>, Without<Strategy>)>) {
     if world.frame_counter % FRAME_DELAY != 0 {
     	return
     }
-
-    // info!("world.pop: {:?}", world.pop);
-
-    // let start = Instant::now();
     
     let mut rng = rand::thread_rng();
-    let unif = Uniform::from(0..3);
-    let gauss = Normal::new(0.0, MUTATION_RATE).unwrap();
+    // let unif = Uniform::from(0..3);
+    // let gauss = Normal::new(0.0, MUTATION_RATE).unwrap();
     let cam = world.cam.unwrap();
-
-    // let duration = start.elapsed();
-    // info!("initialized birds in {:?}", duration);
-
-    // let start = Instant::now();
 
     for (bird_id, Age(bird_age), mut bird_pos, strat, genes, _) in birds.iter_mut() {
 	let cell = world.grid.get(bird_pos.x, bird_pos.y).unwrap();
@@ -415,8 +407,8 @@ fn update_sim(time: Res<Time>,
 	    } else if rng.gen::<f32>() <= birth_rate(world.pop) {
 		match nearest_empty_cell(&world.grid, &bird_pos, &mut rng) {
 		    Some(pos) => {
-			let mutated_genes = mutate(genes, gauss, &mut rng);
-			let egg_id = spawn_egg(mutated_genes, pos, cam,
+			let mutated_genes = mutate(genes, world.gauss, &mut rng);
+			let egg_id = spawn_egg(mutated_genes, *bird_pos, pos, cam,
 					       &mut commands, &mut world, &asset_server);
 			match strat {
 			    Strategy::Selfish => {
@@ -434,9 +426,9 @@ fn update_sim(time: Res<Time>,
 		}
 	    } 
 	    else {
-		let x2 = (bird_pos.x as i32 + unif.sample(&mut rng) - 1)
+		let x2 = (bird_pos.x as i32 + world.unif.sample(&mut rng) - 1)
 		    .clamp(0, GRID_SIZE as i32 - 1) as usize;
-		let y2 = (bird_pos.y as i32 + unif.sample(&mut rng) - 1)
+		let y2 = (bird_pos.y as i32 + world.unif.sample(&mut rng) - 1)
 		    .clamp(0, GRID_SIZE as i32 - 1) as usize;
 		match world.grid.get(x2, y2).unwrap() {
 		    Cell::Empty => {
@@ -467,20 +459,13 @@ fn update_sim(time: Res<Time>,
 	} else {
 	    panic!("expected bird {:?} at location {:?}, got {:?}", bird_id, bird_pos, cell)
 	}
-	// let duration = start.elapsed();
-	// info!("updated bird with strategy {:?} in {:?}", strat, duration);
     }
-
-    // let duration = start.elapsed();
-    // info!("updated birds in {:?}", duration);
 
     for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
 	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
 	if cell.is_egg() {
 	    if *egg_age >= EGG_EXPIRATION as f32 {
 		egg_death(egg_id, egg_pos, &mut commands, &mut world)
-		// commands.entity(egg_id).despawn();
-		// *world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Empty
 	    }
 	} else if cell.is_bird_on_egg() {
 	    let bird_id = cell.bird_id().unwrap();
@@ -490,7 +475,7 @@ fn update_sim(time: Res<Time>,
 		world.pop -= 1;
 		match nearest_empty_cell(&world.grid, egg_pos, &mut rng) {
 		    Some(pos) => {
-			let strat = hatch(&pos, genes, &mut rng);
+			let strat = hatch(genes, &mut rng);
 			let chick_id = spawn_bird(strat, *genes, pos,
 						  cam, &mut commands, &mut world,
 						  &asset_server);
@@ -505,59 +490,3 @@ fn update_sim(time: Res<Time>,
 	}
     }
 }
-
-// fn update_eggs(time: Res<Time>,
-// 		mut commands: Commands,
-// 		mut world: ResMut<World>,
-// 		asset_server: Res<AssetServer>,
-// 		// mut birds: Query<(Entity, &Age, &mut Position, &Strategy,
-// 		// 		  &Genes, With<Sprite>)>,
-// 		mut eggs: Query<(Entity, &Age, &Position, &Genes,
-// 				 With<Sprite>, Without<Strategy>)>) {
-//     if world.frame_counter % 10 != 0 {
-//     	return
-//     }
-
-//     // info!("world.pop: {:?}", world.pop);
-
-//     let start = Instant::now();
-    
-//     let mut rng = rand::thread_rng();
-//     let unif = Uniform::from(0..3);
-//     let gauss = Normal::new(0.0, MUTATION_RATE).unwrap();
-//     let cam = world.cam.unwrap();
-
-//     for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
-// 	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
-// 	if cell.is_egg() {
-// 	    if *egg_age >= EGG_EXPIRATION as f32 {
-// 		egg_death(egg_id, egg_pos, &mut commands, &mut world)
-// 		// commands.entity(egg_id).despawn();
-// 		// *world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Empty
-// 	    }
-// 	} else if cell.is_bird_on_egg() {
-// 	    let bird_id = cell.bird_id().unwrap();
-// 	    if *egg_age >= INCUBATION_PERIOD as f32 {
-// 		commands.entity(world.cam.unwrap()).remove_children(&[egg_id]);
-// 		commands.entity(egg_id).despawn();
-// 		world.pop -= 1;
-// 		match nearest_empty_cell(&world.grid, egg_pos, &mut rng) {
-// 		    Some(pos) => {
-// 			let strat = hatch(&pos, genes, &mut rng);
-// 			let chick_id = spawn_bird(strat, *genes, pos,
-// 						  cam, &mut commands, &mut world,
-// 						  &asset_server);
-// 			*world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Bird(chick_id)
-// 		    },
-// 		    None => () // No space, chick dies
-// 		}
-// 		*world.grid.get_mut(egg_pos.x, egg_pos.y).unwrap() = Cell::Bird(bird_id)
-// 	    }
-// 	} else {
-// 	    panic!("expected egg at location {:?}", egg_pos)
-// 	}
-//     }
-
-//     // let duration = start.elapsed();
-//     // info!("updated eggs in {:?}", duration);
-// }
