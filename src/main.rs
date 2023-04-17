@@ -13,7 +13,7 @@ use rand_distr::{Normal};
 // use std::time::{Duration, Instant};
 
 const CELL_SIZE: usize = 24;
-const GRID_SIZE: usize = 8;
+const GRID_SIZE: usize = 16;
 const MOVE_SPEED: f32 = 10.0;
 const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 3) as usize;
 const CAM_SPEED: f32 = 400.0;
@@ -21,7 +21,7 @@ const INCUBATION_PERIOD: u32 = 15;
 const EGG_EXPIRATION: u32 = 20;
 const DEATH_RATE: f32 = 1.0 / 500.0;
 const MUTATION_RATE: f32 = 0.01;
-const FRAME_DELAY: u32 = 1000;
+const FRAME_DELAY: u32 = 10;
 
 #[derive(Component, Clone, Copy, Debug)]
 enum Strategy {
@@ -129,7 +129,7 @@ impl Stats {
 	self.total_pop += 1
     }
 
-    fn remove_bird(&mut self, strat: &Strategy, age: &Age) {
+    fn subtract_bird(&mut self, strat: &Strategy, age: &Age) {
 	match strat {
 	    Strategy::Altruistic => {
 		self.altruist_pop -= 1;
@@ -149,7 +149,7 @@ impl Stats {
 	self.total_pop += 1
     }
     
-    fn remove_egg(&mut self) {
+    fn subtract_egg(&mut self) {
 	self.egg_pop -= 1;
 	self.total_pop -= 1;
     }
@@ -264,10 +264,12 @@ fn setup(mut commands: Commands,
     let unif = Uniform::from(0..GRID_SIZE);
 
     let dim = (GRID_SIZE * CELL_SIZE) as f32;
-    let border_color = Color::rgba(2.0 / 256.0,
-				   48.0 / 256.0,
-				   32.0 / 256.0,
-				   0.75);
+    // let border_color = Color::rgba(2.0 / 256.0,
+    // 				   48.0 / 256.0,
+    // 				   32.0 / 256.0,
+    // 				   0.75);
+
+    // Brooding area background.
     commands.spawn(SpriteBundle {
         sprite: Sprite {
 	    color: Color::rgba(1.0, 1.0, 1.0, 0.075),
@@ -276,7 +278,8 @@ fn setup(mut commands: Commands,
         },
         transform: Transform::from_translation(
 	    Vec3::new(dim / 2.0 - CELL_SIZE as f32 / 2.0,
-		      dim / 2.0 - CELL_SIZE as f32 / 2.0, 0.0)),
+		      dim / 2.0 - CELL_SIZE as f32 / 2.0,
+		      -2.0)),
         ..default()
     });
     
@@ -432,8 +435,8 @@ fn mutate(genes: &Genes,
 	  gauss: rand_distr::Normal<f32>, rng: &mut ThreadRng) -> Genes {
     let Genes(Vec3 { x, y, z }) = genes;
     let x2 = f32::max(0.0, x + gauss.sample(rng));
-    // let y2 = f32::max(0.0, y + gauss.sample(rng));
-    let y2 = y;
+    let y2 = f32::max(0.0, y + gauss.sample(rng));
+    // let y2 = y;
     let z2 = f32::max(0.0, z + gauss.sample(rng));
     // let z2 = z;
     let c = x2 + y2 + z2;
@@ -453,7 +456,7 @@ fn hatch(genes: &Genes, rng: &mut ThreadRng) -> Strategy {
 }
 
 fn spawn_bird(strat: Strategy, genes: Genes, pos: Position,
-	      commands: &mut Commands, world: &mut ResMut<World>,
+	      commands: &mut Commands, world: &mut World,
 	      asset_server: &Res<AssetServer>) -> Entity {
     world.stats.add_bird(&strat);
     commands.spawn(Bird {
@@ -471,7 +474,7 @@ fn spawn_bird(strat: Strategy, genes: Genes, pos: Position,
 	    transform: Transform {
 		translation: Vec3::new((pos.x * CELL_SIZE) as f32,
 				       (pos.y * CELL_SIZE) as f32,
-				       0.0),
+				       -1.0),
 		..default()
 	    },
 	    sprite: Sprite {
@@ -496,7 +499,7 @@ fn spawn_egg(genes: Genes, bird_pos: Position, pos: Position,
 	    transform: Transform {
 		translation: Vec3::new((bird_pos.x * CELL_SIZE) as f32,
 				       (bird_pos.y * CELL_SIZE) as f32,
-				       1.0),
+				       0.0),
 		..default()
 	    },
 	    sprite: Sprite {
@@ -517,7 +520,7 @@ fn bird_death(id: Entity, pos: &Position, strat: &Strategy, age: &Age,
     // info!("bird {:?} died at {:?}", id, pos);
     commands.entity(id).despawn();
     *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
-    world.stats.remove_bird(strat, age)
+    world.stats.subtract_bird(strat, age)
 }
 
 fn egg_death(id: Entity, pos: &Position,
@@ -525,7 +528,7 @@ fn egg_death(id: Entity, pos: &Position,
     // info!("egg {:?} died at {:?}", id, pos);
     commands.entity(id).despawn();
     *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
-    world.stats.remove_egg()
+    world.stats.subtract_egg()
 }
 
 fn update_sim(mut commands: Commands,
@@ -580,14 +583,12 @@ fn update_sim(mut commands: Commands,
 			bird_pos.x = x2;
 			bird_pos.y = y2
 		    },
-		    Cell::Egg(egg_id) => {
-			let egg_id = *egg_id;
+		    Cell::Egg(_) => {
 			match strat {
 			    Strategy::Altruistic => {
 				*world.grid.get_mut(bird_pos.x, bird_pos.y).unwrap() =
 				    Cell::Empty;
-				*world.grid.get_mut(x2, y2).unwrap() =
-				    Cell::BirdOnEgg(bird_id);
+				*world.grid.get_mut(x2, y2).unwrap() = Cell::BirdOnEgg(bird_id);
 				bird_pos.x = x2;
 				bird_pos.y = y2
 			    },
@@ -614,7 +615,7 @@ fn update_sim(mut commands: Commands,
 	    let bird_id = cell.bird_id().unwrap();
 	    if *egg_age >= INCUBATION_PERIOD as f32 {
 		commands.entity(egg_id).despawn();
-		world.stats.remove_egg();
+		world.stats.subtract_egg();
 		match nearest_empty_cell(&world.grid, egg_pos, &mut rng) {
 		    Some(pos) => {
 			let strat = hatch(genes, &mut rng);
@@ -632,7 +633,7 @@ fn update_sim(mut commands: Commands,
 	}
     }
 
-    // info!("{:?}", world.stats)
+    info!("{:?}", world.stats)
 }
 
 fn update_pop_bars(mut ui: Res<Ui>,
