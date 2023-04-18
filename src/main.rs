@@ -10,17 +10,16 @@ use bevy::{
 use rand::prelude::*;
 use rand::distributions::Uniform;
 use rand_distr::{Normal};
-// use std::time::{Duration, Instant};
 
 const CELL_SIZE: usize = 24;
-const GRID_SIZE: usize = 64;
+const GRID_SIZE: usize = 32;
 const MOVE_SPEED: f32 = 10.0;
 const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 3) as usize;
-const CAM_SPEED: f32 = 400.0;
 const INCUBATION_PERIOD: u32 = 15;
 const EGG_EXPIRATION: u32 = 20;
 const DEATH_RATE: f32 = 1.0 / 500.0;
 const MUTATION_RATE: f32 = 0.01;
+const CAM_SPEED: f32 = 400.0;
 const FRAME_DELAY: u32 = 1;
 
 #[derive(Component, Clone, Copy, Debug)]
@@ -211,7 +210,6 @@ fn main() {
             }),
             ..default()
         }))
-        // .add_plugins(DefaultPlugins)
 	.add_plugin(LogDiagnosticsPlugin::default())
 	.add_plugin(FrameTimeDiagnosticsPlugin::default())
 	.init_resource::<World>()
@@ -221,9 +219,7 @@ fn main() {
 	.add_system(update_camera)
 	.add_system(move_sprites)
 	.add_system(update_sim.in_set(Sets::Sim))
-	// .add_system(update_eggs.in_set(Sets::Sim))
 	.add_system(update_age.after(Sets::Sim))
-	.add_system(update_frame_counter.after(Sets::Sim))
 	.add_system(update_pop_bars.after(Sets::Sim))
         .run();
 }
@@ -243,11 +239,13 @@ fn nearest_empty_cell(grid: &Array2D<Cell>, pos: &Position, rng: &mut ThreadRng)
     None
 }
 
+// STARTUP SYSTEM: make camera, brooding area, initial guillemot population.
 fn setup(mut commands: Commands,
 	 mut world: ResMut<World>,
 	 mut ui: ResMut<Ui>,
 	 asset_server: Res<AssetServer>) {
     use bevy::core_pipeline::clear_color::ClearColorConfig;
+    // Spawn camera.
     commands.spawn(Camera2dBundle {
 	camera_2d: Camera2d { clear_color:
 			      ClearColorConfig::Custom(Color::rgba(0.0, 0.0, 0.0, 1.0)) },
@@ -265,12 +263,8 @@ fn setup(mut commands: Commands,
     });
 
     let dim = (GRID_SIZE * CELL_SIZE) as f32;
-    // let border_color = Color::rgba(2.0 / 256.0,
-    // 				   48.0 / 256.0,
-    // 				   32.0 / 256.0,
-    // 				   0.75);
 
-    // Brooding area background.
+    // Spawn brooding area background.
     commands.spawn(SpriteBundle {
         sprite: Sprite {
 	    color: Color::rgba(1.0, 1.0, 1.0, 0.075),
@@ -283,7 +277,8 @@ fn setup(mut commands: Commands,
 		      -2.0)),
         ..default()
     });
-    
+
+    // Spawn altruist UI bar element (initialize with 0 width).
     ui.altruist_bar = commands.spawn(NodeBundle {
         style: Style {
 	    size: Size::new(Val::Percent(0.0), Val::Px(20.0)),
@@ -296,7 +291,8 @@ fn setup(mut commands: Commands,
         background_color: Color::rgb(0.0, 0.0, 1.0).into(),
         ..default()
     }).insert(Strategy::Altruistic).id();
-    
+
+    // Spawn selfish UI bar element (initialize with 0 width).
     ui.selfish_bar = commands.spawn(NodeBundle {
         style: Style {
 	    size: Size::new(Val::Percent(0.0), Val::Px(20.0)),
@@ -309,7 +305,8 @@ fn setup(mut commands: Commands,
         background_color: Color::rgb(0.5, 0.0, 1.0).into(),
         ..default()
     }).insert(Strategy::Selfish).id();
-    
+
+    // Spawn cheater UI bar element (initialize with 0 width).
     ui.cheater_bar = commands.spawn(NodeBundle {
         style: Style {
 	    size: Size::new(Val::Percent(0.0), Val::Px(20.0)),
@@ -323,6 +320,7 @@ fn setup(mut commands: Commands,
         ..default()
     }).insert(Strategy::Cheat).id();
 
+    // Create initial population of guillemots.
     let mut rng = rand::thread_rng();
     let unif = Uniform::from(0..GRID_SIZE);
     while world.stats.total_pop < TARGET_POP {
@@ -330,11 +328,7 @@ fn setup(mut commands: Commands,
 	let j = unif.sample(&mut rng);
 	if world.grid.get(i, j).unwrap().is_empty() {
 	    let bird_id = spawn_bird(Strategy::Altruistic,
-				     // Genes(Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0)),
 				     Genes(Vec3::new(1.0, 0.0, 0.0)),
-				     // Genes(Vec3::new(1.0/2.0, 0.0, 1.0/2.0)),
-				     // Genes(Vec3::new(4.0/5.0, 1.0/5.0, 0.0)),
-				     // Genes(Vec3::new(0.0, 1.0, 0.0)),
 				     Position { x: i, y: j },
 				     &mut commands, &mut world, &asset_server);
 	    *world.grid.get_mut(i, j).unwrap() = Cell::Bird(bird_id)
@@ -342,6 +336,7 @@ fn setup(mut commands: Commands,
     }
 }
 
+// SYSTEM: check for pause keypress.
 fn update_pause(keyboard_input: Res<Input<KeyCode>>,
 		mut world: ResMut<World>) {
     if keyboard_input.just_pressed(KeyCode::P) {
@@ -349,12 +344,12 @@ fn update_pause(keyboard_input: Res<Input<KeyCode>>,
     }
 }
 
+// SYSTEM
 fn update_camera(time: Res<Time>,
 		 keyboard_input: Res<Input<KeyCode>>,
 		 mut transforms: Query<(&mut Transform,
 					&mut OrthographicProjection,
 					With<Camera>)>,
-		 // mut mouse_motion_events: EventReader<MouseMotion>,
 		 mut scroll_evr: EventReader<MouseWheel>,
 		 buttons: Res<Input<MouseButton>>,
 		 mut motion_evr: EventReader<MouseMotion>,
@@ -400,12 +395,12 @@ fn update_camera(time: Res<Time>,
     // just gives the coordinates of the mouse in screen space.
     for ev in motion_evr.iter() {
     	if buttons.pressed(MouseButton::Left) {
-    	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
     	    transform.translation += Vec3::new(-ev.delta.x, ev.delta.y, 0.0)
     	}
     }
 }
 
+// SYSTEM: move sprites toward their target positions.
 fn move_sprites(time: Res<Time>,
 		mut query: Query<(&mut Transform, &Position)>) {
     for (mut transform, Position { x, y }) in query.iter_mut() {
@@ -416,6 +411,7 @@ fn move_sprites(time: Res<Time>,
     }
 }
 
+// SYSTEM: update ages of guillemots and eggs.
 fn update_age(world: ResMut<World>,
 	      mut eggs: Query<(&mut Age, Without<Strategy>)>,
 	      mut birds: Query<(&mut Age, &Strategy)>) {
@@ -433,27 +429,26 @@ fn update_age(world: ResMut<World>,
     }
 }
 
+// Calculate target birth rate based on current population and death
+// rate (to aim for target population).
 fn birth_rate(current_pop: usize) -> f32 {
-    // 0.0 // calculate based on current_pop, TARGET_POP, and DEATH_RATE
-    // (TARGET_POP - current_pop + current_pop * DEATH_RATE) / (current_pop - )
-    let br = (TARGET_POP as f32 + current_pop as f32 * (DEATH_RATE - 1.0)) /
-	(current_pop as f32 * (1.0 - DEATH_RATE));
-    // info!("current_pop: {}", current_pop);
-    // info!("birth rate: {}", br);
-    br
+    (TARGET_POP as f32 + current_pop as f32 * (DEATH_RATE - 1.0)) /
+	(current_pop as f32 * (1.0 - DEATH_RATE))
 }
 
+// Mutate a set of genes by adding small gaussian noise and
+// renormalizing (wrt. l1 norm).
 fn mutate(Genes(genes): &Genes,
 	  rng: &mut ThreadRng,
 	  gauss: rand_distr::Normal<f32>) -> Genes {
     let x = f32::max(0.0, genes.x + gauss.sample(rng));
     let y = f32::max(0.0, genes.y + gauss.sample(rng));
-    // let y = genes.y;
     let z = f32::max(0.0, genes.z + gauss.sample(rng));
-    // let z = genes.z;
     Genes(Vec3::new(x, y, z) / (x + y + z))
 }
 
+// Choose a concrete strategy by sampling from the distribution
+// encoded by a set of genes.
 fn hatch(Genes(genes): &Genes, rng: &mut ThreadRng) -> Strategy {
     let p: f32 = rng.gen();
     if p <= genes.x {
@@ -465,6 +460,7 @@ fn hatch(Genes(genes): &Genes, rng: &mut ThreadRng) -> Strategy {
     }
 }
 
+// Spawn a guillemot.
 fn spawn_bird(strat: Strategy, genes: Genes, pos: Position,
 	      commands: &mut Commands, world: &mut World,
 	      asset_server: &Res<AssetServer>) -> Entity {
@@ -474,7 +470,6 @@ fn spawn_bird(strat: Strategy, genes: Genes, pos: Position,
 	strategy: strat,
 	genes: genes,
 	position: pos,
-	// alive: Alive(true),
 	sprite: SpriteBundle {
 	    texture: asset_server.load(match strat {
 		Strategy::Altruistic => "altruist.png",
@@ -496,6 +491,7 @@ fn spawn_bird(strat: Strategy, genes: Genes, pos: Position,
 	}}).id()
 }
 
+// Spawn an egg.
 fn spawn_egg(genes: Genes, bird_pos: Position, pos: Position,
 	     commands: &mut Commands, world: &mut World,
 	     asset_server: &Res<AssetServer>) -> Entity {
@@ -521,13 +517,8 @@ fn spawn_egg(genes: Genes, bird_pos: Position, pos: Position,
 	}}).id()
 }
 
-fn update_frame_counter(mut world: ResMut<World>) {
-    world.frame_counter += 1;
-}
-
 fn bird_death(id: Entity, pos: &Position, strat: &Strategy,
 	      commands: &mut Commands, world: &mut ResMut<World>) {
-    // info!("bird {:?} died at {:?}", id, pos);
     commands.entity(id).despawn();
     *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
     world.stats.subtract_bird(strat)
@@ -535,12 +526,12 @@ fn bird_death(id: Entity, pos: &Position, strat: &Strategy,
 
 fn egg_death(id: Entity, pos: &Position,
 	      commands: &mut Commands, world: &mut ResMut<World>) {
-    // info!("egg {:?} died at {:?}", id, pos);
     commands.entity(id).despawn();
     *world.grid.get_mut(pos.x, pos.y).unwrap() = Cell::Empty;
     world.stats.subtract_egg()
 }
 
+// SYSTEM: main simulation update step.
 fn update_sim(mut commands: Commands,
 	      mut world: ResMut<World>,
 	      asset_server: Res<AssetServer>,
@@ -554,6 +545,7 @@ fn update_sim(mut commands: Commands,
     
     let mut rng = rand::thread_rng();
 
+    // Update guillemots.
     for (bird_id, Age(bird_age), mut bird_pos, strat, genes, _) in birds.iter_mut() {
 	let cell = world.grid.get(bird_pos.x, bird_pos.y).unwrap();
 	if cell.is_bird() {
@@ -613,6 +605,7 @@ fn update_sim(mut commands: Commands,
 	}
     }
 
+    // Update eggs.
     for (egg_id, Age(egg_age), egg_pos, genes, _, _) in eggs.iter_mut() {
 	let cell = world.grid.get(egg_pos.x, egg_pos.y).unwrap();
 	if cell.is_egg() {
@@ -641,16 +634,7 @@ fn update_sim(mut commands: Commands,
 	}
     }
 
-    // std::thread::sleep(std::time::Duration::from_millis(5));
-
-    // info!("{:?}", world.stats)
-
-    // let mut genes_sum = Vec3::ZERO;
-    // for (_, _, _, _, &Genes(genes), _) in birds.iter() {
-    // 	genes_sum += genes;
-    // }
-    // let genes_avg = genes_sum / (world.stats.total_pop - world.stats.egg_pop) as f32;
-    // info!("avg genes: {:?}", genes_avg)
+    world.frame_counter += 1;
 }
 
 fn update_pop_bars(ui: Res<Ui>,
@@ -661,10 +645,6 @@ fn update_pop_bars(ui: Res<Ui>,
     let selfish_percent = world.stats.selfish_pop as f32 / n * 100.0;
     let cheater_percent = world.stats.cheater_pop as f32 / n * 100.0;
 
-    // info!("altruist %: {}", altruist_percent);
-    // info!("selfish %: {}", selfish_percent);
-    // info!("cheater %: {}", cheater_percent);
-
     let mut altruist_bar_style = bars.get_mut(ui.altruist_bar).unwrap();
     altruist_bar_style.size.width = Val::Percent(altruist_percent);
     
@@ -674,16 +654,4 @@ fn update_pop_bars(ui: Res<Ui>,
     
     let mut cheater_bar_style = bars.get_mut(ui.cheater_bar).unwrap();
     cheater_bar_style.size.width = Val::Percent(cheater_percent);
-    // cheater_bar_style.position.left = Val::Percent(altruist_percent + selfish_percent);
-    
-    // for (strat, mut style) in bars.iter_mut() {
-    // 	let percent = (match strat {
-    // 	    Strategy::Altruistic => world.stats.altruist_pop,
-    // 	    Strategy::Selfish => world.stats.selfish_pop,
-    // 	    Strategy::Cheat => world.stats.cheater_pop
-    // 	}) as f32 / (world.stats.total_pop - world.stats.egg_pop) as f32 * 100.0;
-    // 	info!("{:?} %: {}", strat, percent);
-    // 	style.size = Size::new(Val::Percent(percent), style.size.height);
-    // 	style.position.left = Val::Percent(1.0 - percent)
-    // }
 }
