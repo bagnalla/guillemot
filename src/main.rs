@@ -13,7 +13,7 @@ use rand_distr::{Normal};
 // use std::time::{Duration, Instant};
 
 const CELL_SIZE: usize = 24;
-const GRID_SIZE: usize = 32;
+const GRID_SIZE: usize = 64;
 const MOVE_SPEED: f32 = 10.0;
 const TARGET_POP: usize = (GRID_SIZE * GRID_SIZE / 3) as usize;
 const CAM_SPEED: f32 = 400.0;
@@ -178,7 +178,8 @@ struct World {
     frame_counter: u32,
     unif: Uniform<i32>,
     gauss: Normal<f32>,
-    stats: Stats
+    stats: Stats,
+    paused: bool
 }
 
 impl Default for World {
@@ -188,7 +189,8 @@ impl Default for World {
 	    frame_counter: 0,
 	    unif: Uniform::from(0..3),
 	    gauss: Normal::new(0.0, MUTATION_RATE).unwrap(),
-	    stats: Stats::default()
+	    stats: Stats::default(),
+	    paused: true
 	}
     }
 }
@@ -215,6 +217,7 @@ fn main() {
 	.init_resource::<World>()
 	.init_resource::<Ui>()
         .add_startup_system(setup)
+	.add_system(update_pause)
 	.add_system(update_camera)
 	.add_system(move_sprites)
 	.add_system(update_sim.in_set(Sets::Sim))
@@ -330,11 +333,19 @@ fn setup(mut commands: Commands,
 				     // Genes(Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0)),
 				     Genes(Vec3::new(1.0, 0.0, 0.0)),
 				     // Genes(Vec3::new(1.0/2.0, 0.0, 1.0/2.0)),
+				     // Genes(Vec3::new(4.0/5.0, 1.0/5.0, 0.0)),
 				     // Genes(Vec3::new(0.0, 1.0, 0.0)),
 				     Position { x: i, y: j },
 				     &mut commands, &mut world, &asset_server);
 	    *world.grid.get_mut(i, j).unwrap() = Cell::Bird(bird_id)
 	}
+    }
+}
+
+fn update_pause(keyboard_input: Res<Input<KeyCode>>,
+		mut world: ResMut<World>) {
+    if keyboard_input.just_pressed(KeyCode::P) {
+	world.paused = !world.paused
     }
 }
 
@@ -387,12 +398,12 @@ fn update_camera(time: Res<Time>,
     // This doesn't work for some reason in the Virtualbox Ubuntu VM
     // (delta should be the difference in mouse position but currently
     // just gives the coordinates of the mouse in screen space.
-    // for ev in motion_evr.iter() {
-    // 	if buttons.pressed(MouseButton::Left) {
-    // 	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
-    // 	    transform.translation += Vec3::new(ev.delta.x, -ev.delta.y, 0.0)
-    // 	}
-    // }
+    for ev in motion_evr.iter() {
+    	if buttons.pressed(MouseButton::Left) {
+    	    // println!("Mouse moved: X: {} px, Y: {} px", ev.delta.x, ev.delta.y);
+    	    transform.translation += Vec3::new(-ev.delta.x, ev.delta.y, 0.0)
+    	}
+    }
 }
 
 fn move_sprites(time: Res<Time>,
@@ -408,7 +419,7 @@ fn move_sprites(time: Res<Time>,
 fn update_age(world: ResMut<World>,
 	      mut eggs: Query<(&mut Age, Without<Strategy>)>,
 	      mut birds: Query<(&mut Age, &Strategy)>) {
-    if world.frame_counter % FRAME_DELAY != 0 {
+    if world.paused || world.frame_counter % FRAME_DELAY != 0 {
     	return
     }
     for (mut age, _) in eggs.iter_mut() {
@@ -436,9 +447,10 @@ fn mutate(Genes(genes): &Genes,
 	  rng: &mut ThreadRng,
 	  gauss: rand_distr::Normal<f32>) -> Genes {
     let x = f32::max(0.0, genes.x + gauss.sample(rng));
-    // let y = f32::max(0.0, genes.y + gauss.sample(rng));
-    let y = genes.y;
+    let y = f32::max(0.0, genes.y + gauss.sample(rng));
+    // let y = genes.y;
     let z = f32::max(0.0, genes.z + gauss.sample(rng));
+    // let z = genes.z;
     Genes(Vec3::new(x, y, z) / (x + y + z))
 }
 
@@ -536,7 +548,7 @@ fn update_sim(mut commands: Commands,
 				&Genes, With<Sprite>)>,
 	      mut eggs: Query<(Entity, &Age, &Position, &Genes,
 	      		 With<Sprite>, Without<Strategy>)>) {
-    if world.frame_counter % FRAME_DELAY != 0 {
+    if world.paused || world.frame_counter % FRAME_DELAY != 0 {
     	return
     }
     
@@ -628,6 +640,8 @@ fn update_sim(mut commands: Commands,
 	    panic!("expected egg at location {:?}", egg_pos)
 	}
     }
+
+    // std::thread::sleep(std::time::Duration::from_millis(5));
 
     // info!("{:?}", world.stats)
 
